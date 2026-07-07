@@ -356,6 +356,24 @@ function runDemoAfterFinalizedLottery(): void {
   buildDemoMailQueue();
 }
 
+function resetDemo(): void {
+  const config = getDemoConfig();
+  assertDemoEnvironment(config);
+  const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
+  const memberSpreadsheet = SpreadsheetApp.openById(config.memberRosterSpreadsheetId);
+
+  replaceSheetRows(memberSpreadsheet, DEMO_SHEETS.members, DEMO_HEADERS.members, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.validatedApplications, DEMO_HEADERS.validatedApplications, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.applicationExceptions, DEMO_HEADERS.applicationExceptions, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.lotteryDraft, DEMO_HEADERS.lotteryDraft, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.lotteryFinal, DEMO_HEADERS.lotteryFinal, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.serialCodes, DEMO_HEADERS.serialCodes, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.serialAssignments, DEMO_HEADERS.serialAssignments, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.mailQueue, DEMO_HEADERS.mailQueue, []);
+
+  logDemo("Demo sheets have been reset to initial empty states.");
+}
+
 function getDemoConfig(): DemoConfig {
   const props = PropertiesService.getScriptProperties();
   return {
