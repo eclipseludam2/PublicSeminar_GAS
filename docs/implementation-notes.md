@@ -57,4 +57,28 @@
 - シリアルコードは1コード1チケットとして扱い、重複割当を禁止する。
 - メール送信前に必ずプレビューまたはドライランを用意する。
 - 送信済み行を再送しないための状態管理を必ず入れる。
+## デモ版実装
 
+デモ版では `ENVIRONMENT=DEMO` を必須にし、別GASプロジェクト・別フォーム・別スプレッドシート・デモ専用LivePocket URLだけを参照します。
+
+公開関数:
+
+- `setupDemoSheets`: デモ管理シートを作成する。
+- `importDemoSerialCodesFromSheet`: LivePocket ExcelをGoogle Sheetsへ取り込んだ `SerialImport` から `DemoSerialCodes` へ正規化する。
+- `validateDemoApplications`: フォーム回答をデモ名簿と照合し、有効申込と例外に分ける。
+- `createDemoLotteryDraft`: 有効申込から仮当選を作成する。
+- `finalizeDemoLottery`: 管理者調整後の仮当選を確定結果へコピーする。
+- `allocateDemoSerialCodes`: `DemoSerialCodes` の未割当シリアルを当選枚数分だけ割り当てる。
+- `buildDemoMailQueue`: 当選者ごとのメール本文を作る。
+- `sendDemoMails`: `READY` のメールを実送信し、送信状態を更新する。
+- `runDemoValidationAndDraft`: 照合から仮当選作成までをまとめて実行する。
+- `runDemoAfterFinalizedLottery`: 確定、シリアル割当、メールキュー作成までをまとめて実行する。
+
+デモ用シリアルコードExcelはGit管理外で扱います。Google Sheetsに取り込む場合は、LivePocket Excelの `シリアルコード` 列を `DemoSerialCodes.serialCode` として扱い、追加列 `assignedApplicationId` と `assignedAt` はGASが更新します。
+
+デモメールはフォーム回答者へ実送信します。送信前に `DemoMailQueue` を確認し、件名に `[DEMO]` が付いていること、本文URLがデモLivePocket URLであることを確認します。
+## 元名簿生成の注意
+
+オリジナル名簿はGit管理外のGoogle Sheetsとして扱います。GASには列名とフィルタ条件だけを設定し、生成後の `DemoMembers` / 将来の本番用 `Members` を照合対象にします。
+
+元名簿から生成する際は、重複した `studentId` をエラーにし、不要な列は生成済み名簿へ持ち込みません。デモではチームメンバーだけが残るよう、フィルタ列と値を設定してください。
