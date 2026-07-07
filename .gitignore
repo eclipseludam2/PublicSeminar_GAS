@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# clasp / Google local credentials and project binding
+.clasp.json
+.clasprc.json
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Private operational data
+data/
+private/
+work/
+outputs/
+*.xlsx
+*.xls
+*.csv
+*.tsv
+!*.example.csv
+!*.example.tsv
+
+# Build and cache output
+dist/
+.cache/
+.tmp/
+tmp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.log
+

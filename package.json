@@ -1,0 +1,27 @@
+{
+  "name": "ticket-application-gas",
+  "version": "1.0.0",
+  "description": "Google Forms, Apps Script, and LivePocket serial-code workflow foundation for member-only ticket applications.",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "clasp:login": "clasp login",
+    "clasp:push": "clasp push",
+    "clasp:open": "clasp open",
+    "clasp:version": "clasp --version",
+    "verify": "npm run typecheck && npm run clasp:version"
+  },
+  "keywords": [
+    "google-apps-script",
+    "clasp",
+    "ticket",
+    "livepocket"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@google/clasp": "^3.3.0",
+    "@types/google-apps-script": "^2.0.11",
+    "typescript": "^5.9.3"
+  }
+}
