@@ -42,6 +42,7 @@ type DemoConfig = {
   formEmailHeader: string;
   formApplicantNameHeader: string;
   formTicketCountHeader: string;
+  studentEmailPattern: string;
   memberSheetName: string;
   memberStudentIdHeader: string;
   memberEmailHeader: string;
@@ -49,6 +50,8 @@ type DemoConfig = {
   memberStatusHeader: string;
   memberActiveStatus: string;
   maxTicketsPerApplication: number;
+  mailDryRun: boolean;
+  mailMaxSendPerRun: number;
   serialImportSheetName: string;
   originalRosterSpreadsheetId: string;
   originalRosterSheetName: string;
@@ -83,7 +86,8 @@ function setupDemoSheets(): void {
   const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
 
   const memberSpreadsheet = SpreadsheetApp.openById(config.memberRosterSpreadsheetId);
-  ensureSheetWithHeader(memberSpreadsheet, DEMO_SHEETS.members, DEMO_HEADERS.members);  ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.validatedApplications, DEMO_HEADERS.validatedApplications);
+  ensureSheetWithHeader(memberSpreadsheet, config.memberSheetName, DEMO_HEADERS.members);
+  ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.validatedApplications, DEMO_HEADERS.validatedApplications);
   ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.applicationExceptions, DEMO_HEADERS.applicationExceptions);
   ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.lotteryDraft, DEMO_HEADERS.lotteryDraft);
   ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.lotteryFinal, DEMO_HEADERS.lotteryFinal);
@@ -182,6 +186,7 @@ function validateDemoApplications(): void {
   const memberIndex = loadDemoMemberIndex(config);
   const validRows: string[][] = [];
   const exceptionRows: string[][] = [];
+  const acceptedStudentIds: Record<string, boolean> = {};
 
   readSheetAsMaps(responseSheet).forEach((row, index) => {
     const sourceRow = index + 2;
@@ -191,7 +196,7 @@ function validateDemoApplications(): void {
     const ticketCountText = normalizeText(row[config.formTicketCountHeader]);
     const ticketCount = parsePositiveInteger(ticketCountText);
     const applicationId = buildApplicationId(sourceRow, email, submittedAt);
-    const studentId = extractStudentId(email);
+    const studentId = extractStudentId(email, config);
 
     if (!email) {
       exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, ticketCountText, sourceRow, "EMAIL_MISSING", "メールアドレスが空です"));
@@ -202,11 +207,11 @@ function validateDemoApplications(): void {
       return;
     }
     if (ticketCount === null) {
-      exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, ticketCountText, sourceRow, "INVALID_TICKET_COUNT", "希望枚数が正の整数ではありません"));
+      exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, ticketCountText, sourceRow, "INVALID_TICKET_COUNT", `${config.formTicketCountHeader}が正の整数ではありません`));
       return;
     }
     if (ticketCount > config.maxTicketsPerApplication) {
-      exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, ticketCountText, sourceRow, "TICKET_COUNT_TOO_LARGE", `希望枚数が上限${config.maxTicketsPerApplication}枚を超えています`));
+      exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, ticketCountText, sourceRow, "TICKET_COUNT_TOO_LARGE", `${config.formTicketCountHeader}が上限${config.maxTicketsPerApplication}枚を超えています`));
       return;
     }
 
@@ -219,7 +224,12 @@ function validateDemoApplications(): void {
       exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, String(ticketCount), sourceRow, "MEMBER_NOT_ACTIVE", `会員状態が${config.memberActiveStatus}ではありません`));
       return;
     }
+    if (acceptedStudentIds[studentId]) {
+      exceptionRows.push(buildExceptionRow(applicationId, submittedAt, email, applicantName, String(ticketCount), sourceRow, "DUPLICATE_APPLICATION", "同じ学籍番号の有効申込が既にあります"));
+      return;
+    }
 
+    acceptedStudentIds[studentId] = true;
     validRows.push([applicationId, submittedAt, email, studentId, applicantName, String(ticketCount), member.memberName, String(sourceRow)]);
   });
 
@@ -265,33 +275,43 @@ function allocateDemoSerialCodes(): void {
   const config = getDemoConfig();
   assertDemoEnvironment(config);
   const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
-  const finalWinners = loadFinalWinners(spreadsheet);
+  const finalWinners = loadRequiredFinalWinners(spreadsheet);
   const serialSheet = getRequiredSheet(spreadsheet, DEMO_SHEETS.serialCodes);
+  const assignmentsSheet = ensureSheetWithHeader(spreadsheet, DEMO_SHEETS.serialAssignments, DEMO_HEADERS.serialAssignments);
+  const existingAssignmentsByApplication = groupAssignmentsByApplication(spreadsheet);
   const availableSerials = readSheetAsMaps(serialSheet)
     .map((row, index) => ({ row, rowNumber: index + 2 }))
     .filter((item) => normalizeText(item.row.serialCode) && !normalizeText(item.row.assignedApplicationId));
-  const requiredCount = finalWinners.reduce((sum, winner) => sum + winner.finalTicketCount, 0);
+  const additionalRequiredCount = finalWinners.reduce((sum, winner) => {
+    const existingCount = (existingAssignmentsByApplication[winner.applicationId] || []).length;
+    if (existingCount > winner.finalTicketCount) {
+      throw new Error(`Too many demo serial assignments for applicationId=${winner.applicationId}. required=${winner.finalTicketCount}, existing=${existingCount}`);
+    }
+    return sum + (winner.finalTicketCount - existingCount);
+  }, 0);
 
-  if (availableSerials.length < requiredCount) {
-    throw new Error(`Not enough demo serial codes. required=${requiredCount}, available=${availableSerials.length}`);
+  if (availableSerials.length < additionalRequiredCount) {
+    throw new Error(`Not enough demo serial codes. required=${additionalRequiredCount}, available=${availableSerials.length}`);
   }
 
-  const assignments: string[][] = [];
+  const newAssignments: string[][] = [];
   const assignedAt = new Date().toISOString();
   let serialIndex = 0;
 
   finalWinners.forEach((winner) => {
-    for (let i = 0; i < winner.finalTicketCount; i += 1) {
+    const existingCount = (existingAssignmentsByApplication[winner.applicationId] || []).length;
+    const missingCount = winner.finalTicketCount - existingCount;
+    for (let i = 0; i < missingCount; i += 1) {
       const serial = availableSerials[serialIndex];
       serialIndex += 1;
       const serialCode = normalizeText(serial.row.serialCode);
-      assignments.push([`${winner.applicationId}-${i + 1}`, winner.applicationId, winner.email, winner.applicantName, serialCode, assignedAt]);
+      newAssignments.push([`${winner.applicationId}-${existingCount + i + 1}`, winner.applicationId, winner.email, winner.applicantName, serialCode, assignedAt]);
       serialSheet.getRange(serial.rowNumber, 9, 1, 2).setValues([[winner.applicationId, assignedAt]]);
     }
   });
 
-  replaceSheetRows(spreadsheet, DEMO_SHEETS.serialAssignments, DEMO_HEADERS.serialAssignments, assignments);
-  logDemo(`Serial codes assigned: ${assignments.length}`);
+  appendSheetRows(assignmentsSheet, DEMO_HEADERS.serialAssignments, newAssignments);
+  logDemo(`Serial codes assigned: ${newAssignments.length}`);
 }
 
 function buildDemoMailQueue(): void {
@@ -299,14 +319,14 @@ function buildDemoMailQueue(): void {
   assertDemoEnvironment(config);
   const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
   const assignmentsByApplication = groupAssignmentsByApplication(spreadsheet);
-  const finalWinners = loadFinalWinners(spreadsheet);
+  const finalWinners = loadRequiredFinalWinners(spreadsheet);
   const createdAt = new Date().toISOString();
   const mailRows: string[][] = [];
 
   finalWinners.forEach((winner) => {
     const serialCodes = assignmentsByApplication[winner.applicationId] || [];
-    if (serialCodes.length === 0) {
-      return;
+    if (serialCodes.length !== winner.finalTicketCount) {
+      throw new Error(`Serial assignment count mismatch for applicationId=${winner.applicationId}. required=${winner.finalTicketCount}, assigned=${serialCodes.length}`);
     }
     mailRows.push([
       `MAIL-${winner.applicationId}`,
@@ -330,17 +350,28 @@ function sendDemoMails(): void {
   assertDemoEnvironment(config);
   const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
   const mailSheet = getRequiredSheet(spreadsheet, DEMO_SHEETS.mailQueue);
+  const readyItems = readSheetAsMaps(mailSheet)
+    .map((row, index) => ({ row, sheetRow: index + 2 }))
+    .filter((item) => normalizeStatus(item.row.status) === "READY");
 
-  readSheetAsMaps(mailSheet).forEach((row, index) => {
-    const sheetRow = index + 2;
-    if (normalizeStatus(row.status) !== "READY") {
-      return;
-    }
+  if (config.mailDryRun) {
+    readyItems.forEach((item) => {
+      mailSheet.getRange(item.sheetRow, 6, 1, 4).setValues([["READY", item.row.createdAt, "", "Dry run; Gmail was not sent."]]);
+    });
+    logDemo(`Mail dry run completed: ${readyItems.length}`);
+    return;
+  }
+
+  if (readyItems.length > config.mailMaxSendPerRun) {
+    throw new Error(`Too many READY demo mails. ready=${readyItems.length}, max=${config.mailMaxSendPerRun}`);
+  }
+
+  readyItems.forEach((item) => {
     try {
-      GmailApp.sendEmail(row.email, row.subject, row.body, { name: config.mailSenderName });
-      mailSheet.getRange(sheetRow, 6, 1, 4).setValues([["SENT", row.createdAt, new Date().toISOString(), ""]]);
+      GmailApp.sendEmail(item.row.email, item.row.subject, item.row.body, { name: config.mailSenderName });
+      mailSheet.getRange(item.sheetRow, 6, 1, 4).setValues([["SENT", item.row.createdAt, new Date().toISOString(), ""]]);
     } catch (error) {
-      mailSheet.getRange(sheetRow, 6, 1, 4).setValues([["ERROR", row.createdAt, "", String(error)]]);
+      mailSheet.getRange(item.sheetRow, 6, 1, 4).setValues([["ERROR", item.row.createdAt, "", String(error)]]);
     }
   });
 }
@@ -351,9 +382,27 @@ function runDemoValidationAndDraft(): void {
 }
 
 function runDemoAfterFinalizedLottery(): void {
-  finalizeDemoLottery();
+  const config = getDemoConfig();
+  assertDemoEnvironment(config);
+  const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
+  loadRequiredFinalWinners(spreadsheet);
   allocateDemoSerialCodes();
   buildDemoMailQueue();
+}
+
+function runDemoFullWorkflow(): void {
+  const config = getDemoConfig();
+  assertDemoEnvironment(config);
+  setupDemoSheets();
+  resetDemoWorkflowOutputs(config);
+  if (config.originalRosterSpreadsheetId) {
+    generateDemoMemberRosterFromOriginal();
+  }
+  importDemoSerialCodesFromSheet();
+  runDemoValidationAndDraft();
+  finalizeDemoLottery();
+  runDemoAfterFinalizedLottery();
+  sendDemoMails();
 }
 
 function resetDemo(): void {
@@ -362,7 +411,7 @@ function resetDemo(): void {
   const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
   const memberSpreadsheet = SpreadsheetApp.openById(config.memberRosterSpreadsheetId);
 
-  replaceSheetRows(memberSpreadsheet, DEMO_SHEETS.members, DEMO_HEADERS.members, []);
+  replaceSheetRows(memberSpreadsheet, config.memberSheetName, DEMO_HEADERS.members, []);
   replaceSheetRows(spreadsheet, DEMO_SHEETS.validatedApplications, DEMO_HEADERS.validatedApplications, []);
   replaceSheetRows(spreadsheet, DEMO_SHEETS.applicationExceptions, DEMO_HEADERS.applicationExceptions, []);
   replaceSheetRows(spreadsheet, DEMO_SHEETS.lotteryDraft, DEMO_HEADERS.lotteryDraft, []);
@@ -374,8 +423,22 @@ function resetDemo(): void {
   logDemo("Demo sheets have been reset to initial empty states.");
 }
 
+function resetDemoWorkflowOutputs(config: DemoConfig): void {
+  const spreadsheet = SpreadsheetApp.openById(config.formResponsesSpreadsheetId);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.validatedApplications, DEMO_HEADERS.validatedApplications, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.applicationExceptions, DEMO_HEADERS.applicationExceptions, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.lotteryDraft, DEMO_HEADERS.lotteryDraft, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.lotteryFinal, DEMO_HEADERS.lotteryFinal, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.serialCodes, DEMO_HEADERS.serialCodes, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.serialAssignments, DEMO_HEADERS.serialAssignments, []);
+  replaceSheetRows(spreadsheet, DEMO_SHEETS.mailQueue, DEMO_HEADERS.mailQueue, []);
+  logDemo("Demo workflow output sheets have been reset.");
+}
+
 function getDemoConfig(): DemoConfig {
   const props = PropertiesService.getScriptProperties();
+  const maxTicketsPerApplication = parseRequiredPositiveIntegerProperty(props, "DEMO_MAX_TICKETS_PER_APPLICATION", "20");
+  const mailMaxSendPerRun = parseRequiredPositiveIntegerProperty(props, "DEMO_MAIL_MAX_SEND_PER_RUN", "20");
   return {
     environment: getRequiredProperty(props, "ENVIRONMENT"),
     formResponsesSpreadsheetId: getRequiredProperty(props, "DEMO_FORM_RESPONSES_SPREADSHEET_ID"),
@@ -385,14 +448,17 @@ function getDemoConfig(): DemoConfig {
     formResponseSheetName: props.getProperty("DEMO_FORM_RESPONSE_SHEET_NAME") || "FormResponses",
     formEmailHeader: props.getProperty("DEMO_FORM_EMAIL_HEADER") || "メールアドレス",
     formApplicantNameHeader: props.getProperty("DEMO_FORM_APPLICANT_NAME_HEADER") || "申請者名",
-    formTicketCountHeader: props.getProperty("DEMO_FORM_TICKET_COUNT_HEADER") || "希望枚数",
+    formTicketCountHeader: props.getProperty("DEMO_FORM_TICKET_COUNT_HEADER") || "チケット申し込み枚数",
+    studentEmailPattern: props.getProperty("DEMO_STUDENT_EMAIL_PATTERN") || "^[a-z](\\d{7})@",
     memberSheetName: props.getProperty("DEMO_MEMBER_SHEET_NAME") || DEMO_SHEETS.members,
     memberStudentIdHeader: props.getProperty("DEMO_MEMBER_STUDENT_ID_HEADER") || "studentId",
     memberEmailHeader: props.getProperty("DEMO_MEMBER_EMAIL_HEADER") || "email",
     memberNameHeader: props.getProperty("DEMO_MEMBER_NAME_HEADER") || "memberName",
     memberStatusHeader: props.getProperty("DEMO_MEMBER_STATUS_HEADER") || "status",
     memberActiveStatus: props.getProperty("DEMO_MEMBER_ACTIVE_STATUS") || "ACTIVE",
-    maxTicketsPerApplication: Number(props.getProperty("DEMO_MAX_TICKETS_PER_APPLICATION") || "20"),
+    maxTicketsPerApplication,
+    mailDryRun: parseBooleanProperty(props, "DEMO_MAIL_DRY_RUN", true),
+    mailMaxSendPerRun,
     serialImportSheetName: props.getProperty("DEMO_SERIAL_IMPORT_SHEET_NAME") || "SerialImport",
     originalRosterSpreadsheetId: props.getProperty("DEMO_ORIGINAL_ROSTER_SPREADSHEET_ID") || "",
     originalRosterSheetName: props.getProperty("DEMO_ORIGINAL_ROSTER_SHEET_NAME") || "OriginalRoster",
@@ -421,6 +487,29 @@ function getRequiredProperty(props: GoogleAppsScript.Properties.Properties, key:
     throw new Error(`Missing Script Property: ${key}`);
   }
   return value;
+}
+
+function parseRequiredPositiveIntegerProperty(props: GoogleAppsScript.Properties.Properties, key: string, defaultValue: string): number {
+  const parsed = parsePositiveInteger(props.getProperty(key) || defaultValue);
+  if (parsed === null) {
+    throw new Error(`Script Property ${key} must be a positive integer.`);
+  }
+  return parsed;
+}
+
+function parseBooleanProperty(props: GoogleAppsScript.Properties.Properties, key: string, defaultValue: boolean): boolean {
+  const rawValue = props.getProperty(key);
+  if (rawValue === null) {
+    return defaultValue;
+  }
+  const value = normalizeStatus(rawValue);
+  if (value === "TRUE") {
+    return true;
+  }
+  if (value === "FALSE") {
+    return false;
+  }
+  throw new Error(`Script Property ${key} must be true or false.`);
 }
 
 function ensureSheetWithHeader(spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet, sheetName: string, headers: readonly string[]): GoogleAppsScript.Spreadsheet.Sheet {
@@ -478,6 +567,13 @@ function replaceSheetRows(spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
   }
 }
 
+function appendSheetRows(sheet: GoogleAppsScript.Spreadsheet.Sheet, headers: readonly string[], rows: string[][]): void {
+  if (rows.length === 0) {
+    return;
+  }
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+}
+
 function loadDemoMemberIndex(config: DemoConfig): Record<string, { email: string; memberName: string; status: string }> {
   const spreadsheet = SpreadsheetApp.openById(config.memberRosterSpreadsheetId);
   const sheet = getRequiredSheet(spreadsheet, config.memberSheetName);
@@ -510,13 +606,30 @@ function loadFinalWinners(spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet)
     .filter((winner) => winner.finalTicketCount > 0);
 }
 
+function loadRequiredFinalWinners(spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet): FinalWinner[] {
+  const finalRows = readSheetAsMaps(getRequiredSheet(spreadsheet, DEMO_SHEETS.lotteryFinal));
+  if (finalRows.length === 0) {
+    throw new Error("DemoLotteryFinal is empty. Run finalizeDemoLottery after reviewing DemoLotteryDraft.");
+  }
+  const finalWinners = loadFinalWinners(spreadsheet);
+  if (finalWinners.length === 0) {
+    throw new Error("DemoLotteryFinal has no winners with positive ticket counts.");
+  }
+  return finalWinners;
+}
+
 function groupAssignmentsByApplication(spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet): Record<string, string[]> {
   const grouped: Record<string, string[]> = {};
   readSheetAsMaps(getRequiredSheet(spreadsheet, DEMO_SHEETS.serialAssignments)).forEach((row) => {
-    if (!grouped[row.applicationId]) {
-      grouped[row.applicationId] = [];
+    const applicationId = normalizeText(row.applicationId);
+    const serialCode = normalizeText(row.serialCode);
+    if (!applicationId || !serialCode) {
+      return;
     }
-    grouped[row.applicationId].push(row.serialCode);
+    if (!grouped[applicationId]) {
+      grouped[applicationId] = [];
+    }
+    grouped[applicationId].push(serialCode);
   });
   return grouped;
 }
@@ -558,9 +671,15 @@ function buildDemoMailBody(winner: FinalWinner, serialCodes: string[], livePocke
   ].join("\n");
 }
 
-function extractStudentId(email: string): string {
-  const match = email.match(/^[a-z](\d{7})@/);
-  return match ? match[1] : "";
+function extractStudentId(email: string, config: DemoConfig): string {
+  let regex: RegExp;
+  try {
+    regex = new RegExp(config.studentEmailPattern);
+  } catch (error) {
+    throw new Error(`DEMO_STUDENT_EMAIL_PATTERN is invalid: ${String(error)}`);
+  }
+  const match = email.match(regex);
+  return match && match[1] ? match[1] : "";
 }
 
 function parsePositiveInteger(value: unknown): number | null {

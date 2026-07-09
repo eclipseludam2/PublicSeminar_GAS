@@ -2,7 +2,7 @@
 
 Googleフォーム、Google Apps Script、LivePocketのシリアルコード機能を組み合わせた、会員限定チケット申込・抽選・シリアル配布ワークフローの開発基盤です。
 
-今回は基盤と規約のみを用意しています。フォーム回答処理、会員照合、抽選、シリアル割当、メール送信の本実装は次段階で追加します。
+現在は開発基盤に加えて、デモ環境向けのフォーム回答処理、会員照合、仮当選、シリアル割当、メールキュー作成、ドライラン付きメール送信を実装しています。本番運用向けの実データやGoogle資産IDは含めません。
 
 ## 前提
 
@@ -56,15 +56,28 @@ git status --short
 1. デモ専用Googleフォームと回答スプレッドシートを作成する。
 2. デモ専用Apps Scriptプロジェクトを作成し、`.clasp.json` の `scriptId` に設定する。
 3. GASのScript Propertiesに `.env.example` の `DEMO_` 設定を登録する。`ENVIRONMENT` は必ず `DEMO` にする。
+   フォーム回答シートの列名は `タイムスタンプ`、`メールアドレス`、`チケット申し込み枚数`、`申請者名` を想定する。違う場合は `DEMO_FORM_*_HEADER` を実際の列名に合わせる。
+   `DEMO_STUDENT_EMAIL_PATTERN` は大学ドメインまで含めた正規表現に調整する。例: `^[a-z](\d{7})@example\.ac\.jp$`
+   初回確認では `DEMO_MAIL_DRY_RUN=true` のままにし、実送信する場合だけ `false` に変更する。`DEMO_MAIL_MAX_SEND_PER_RUN` で1回の最大送信数を制限する。
 4. `npm run clasp:push` でデモGASへ反映する。
 5. GASエディタで `setupDemoSheets` を実行し、デモ管理シートを作る。
 6. オリジナル名簿からデモ対象者だけを抽出する場合は、`DEMO_ORIGINAL_ROSTER_*` を設定して `generateDemoMemberRosterFromOriginal` を実行する。手動で行う場合は `DemoMembers` にチームメンバーだけを登録し、`status` を `ACTIVE` にする。
 7. LivePocketから取得したデモ専用シリアルコードExcelをGoogle Sheetsの `SerialImport` シートへ取り込み、GASで `importDemoSerialCodesFromSheet` を実行して `DemoSerialCodes` に正規化する。
 8. チームメンバーがデモフォームに回答する。
 9. `runDemoValidationAndDraft` を実行し、`DemoLotteryDraft` を確認・調整する。
-10. `runDemoAfterFinalizedLottery` を実行し、シリアル割当と `DemoMailQueue` を作る。
-11. `DemoMailQueue` を確認してから `sendDemoMails` を実行する。
-12. 受信メールのデモLivePocket URLとシリアルコードで申込動作を確認する。
+10. `finalizeDemoLottery` を実行し、調整後の仮当選を `DemoLotteryFinal` へ確定コピーする。
+11. `runDemoAfterFinalizedLottery` を実行し、確定済みの `DemoLotteryFinal` をもとにシリアル割当と `DemoMailQueue` を作る。
+12. `DemoMailQueue` を確認してから `sendDemoMails` を実行する。`DEMO_MAIL_DRY_RUN=true` の場合はGmail送信せず、対象行を `READY` のまま残してエラー欄にドライラン結果を記録する。
+13. 実送信する場合は `DEMO_MAIL_DRY_RUN=false` と送信対象件数を確認してから `sendDemoMails` を再実行する。
+14. 受信メールのデモLivePocket URLとシリアルコードで申込動作を確認する。
+
+### デモ通し実行
+
+管理者レビューを省略してデモ動作を一気に確認する場合は、`runDemoFullWorkflow` を実行します。
+
+この関数はシート作成、出力シートのリセット、必要に応じた `DemoMembers` 再生成、`SerialImport` からのシリアル再取り込み、`runDemoValidationAndDraft`、`finalizeDemoLottery`、`runDemoAfterFinalizedLottery`、`sendDemoMails` を順に実行します。`DEMO_MAIL_DRY_RUN=true` の場合はGmail送信せず、メールキューの `READY` 行にドライラン結果だけを記録します。
+
+`DEMO_ORIGINAL_ROSTER_SPREADSHEET_ID` が未設定の場合、手入力済みの `DemoMembers` は保持します。設定済みの場合は、元名簿から `DemoMembers` を再生成します。
 
 ### デモ混入防止チェック
 

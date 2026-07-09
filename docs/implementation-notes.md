@@ -2,7 +2,7 @@
 
 ## 今回の状態
 
-このリポジトリは基盤のみです。GASの本実装はまだありません。
+このリポジトリには開発基盤とデモ版GAS実装があります。本番運用向けの実データ、Google資産ID、会員名簿、シリアルコード実ファイルは含めません。
 
 現在あるもの:
 
@@ -10,7 +10,8 @@
 - GAS用 `src/appsscript.json`
 - GAS疎通確認用 `healthCheck`
 - GitHub共有向けの秘密情報除外ルール
-- 将来実装のアーキテクチャメモ
+- デモ環境向けのフォーム回答検証、会員照合、重複申込検出、仮当選作成、確定後シリアル割当、メールキュー作成、ドライラン付きメール送信
+- 将来の本番実装に向けたアーキテクチャメモ
 
 ## 将来実装する責務
 
@@ -65,14 +66,15 @@
 
 - `setupDemoSheets`: デモ管理シートを作成する。
 - `importDemoSerialCodesFromSheet`: LivePocket ExcelをGoogle Sheetsへ取り込んだ `SerialImport` から `DemoSerialCodes` へ正規化する。
-- `validateDemoApplications`: フォーム回答をデモ名簿と照合し、有効申込と例外に分ける。
+- `validateDemoApplications`: フォーム回答をデモ名簿と照合し、有効申込と例外に分ける。同じ学籍番号の有効申込は2件目以降を重複例外にする。
 - `createDemoLotteryDraft`: 有効申込から仮当選を作成する。
 - `finalizeDemoLottery`: 管理者調整後の仮当選を確定結果へコピーする。
 - `allocateDemoSerialCodes`: `DemoSerialCodes` の未割当シリアルを当選枚数分だけ割り当てる。
 - `buildDemoMailQueue`: 当選者ごとのメール本文を作る。
-- `sendDemoMails`: `READY` のメールを実送信し、送信状態を更新する。
+- `sendDemoMails`: `READY` のメールを送信またはドライラン処理し、送信状態を更新する。既定では `DEMO_MAIL_DRY_RUN=true` のためGmail送信しない。
 - `runDemoValidationAndDraft`: 照合から仮当選作成までをまとめて実行する。
-- `runDemoAfterFinalizedLottery`: 確定、シリアル割当、メールキュー作成までをまとめて実行する。
+- `runDemoAfterFinalizedLottery`: 確定済みの `DemoLotteryFinal` をもとに、シリアル割当とメールキュー作成をまとめて実行する。`DemoLotteryFinal` は上書きしない。
+- `runDemoFullWorkflow`: デモ確認用に、シート作成、出力シートのリセット、必要に応じた名簿生成、シリアル再取り込み、照合、仮当選作成、即時確定、シリアル割当、メールキュー作成、メール送信またはドライランまでをまとめて実行する。
 
 デモ用シリアルコードExcelはGit管理外で扱います。Google Sheetsに取り込む場合は、LivePocket Excelの `シリアルコード` 列を `DemoSerialCodes.serialCode` として扱い、追加列 `assignedApplicationId` と `assignedAt` はGASが更新します。
 
